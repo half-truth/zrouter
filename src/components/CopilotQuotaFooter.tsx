@@ -9,6 +9,7 @@ import {
   TierBadge,
   utilizationColor,
 } from "@/components/SubscriptionQuotaFooter";
+import { useRelativeTimeTicker } from "@/hooks/useRelativeTimeTicker";
 
 interface CopilotQuotaFooterProps {
   meta?: ProviderMeta;
@@ -49,12 +50,7 @@ const CopilotQuotaFooter: React.FC<CopilotQuotaFooterProps> = ({
     refetch,
   } = useCopilotQuota(accountId, { enabled: true, autoQuery: isCurrent });
 
-  const [now, setNow] = React.useState(Date.now());
-  React.useEffect(() => {
-    if (!quota?.queriedAt) return;
-    const interval = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(interval);
-  }, [quota?.queriedAt]);
+  const now = useRelativeTimeTicker(Boolean(quota?.queriedAt));
 
   if (!quota) return null;
 

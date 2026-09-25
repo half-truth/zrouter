@@ -49,6 +49,7 @@ import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { usePiCurrentState } from "@/lib/query/pi";
 import { isProxyAppId } from "@/config/appConfig";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -207,7 +208,8 @@ export function ProviderList({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
     enabled: appId === "claude-desktop",
-    refetchInterval: appId === "claude-desktop" ? 5000 : false,
+    refetchInterval: useGatedRefetchInterval(5_000, appId === "claude-desktop"),
+    refetchIntervalInBackground: false,
   });
   const {
     data: piCurrentState,

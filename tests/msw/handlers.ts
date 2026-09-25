@@ -384,6 +384,10 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/update_circuit_breaker_config`, () =>
     success(true),
   ),
+  http.post(`${TAURI_ENDPOINT}/take_pending_deeplink`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/take_pending_deeplink_error`, () =>
+    success(null),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_provider_health`, () =>
     success({
       provider_id: "mock-provider",

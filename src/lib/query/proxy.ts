@@ -7,6 +7,7 @@ import type {
   AppProxyConfig,
   ProxyTakeoverStatus,
 } from "@/types/proxy";
+import { isWindowActive, useGatedRefetchInterval } from "@/lib/windowActivity";
 
 export const proxyKeys = {
   status: ["proxyStatus"] as const,
@@ -24,8 +25,11 @@ export function useProxyStatusQuery() {
   return useQuery({
     queryKey: proxyKeys.status,
     queryFn: () => proxyApi.getProxyStatus(),
-    // 仅在服务运行时轮询
-    refetchInterval: (query) => (query.state.data?.running ? 2000 : false),
+    // 仅在窗口聚焦且服务运行时轮询。门控依赖 query.state，只有取到数据后
+    // 才知道，所以保留 React Query 的函数式写法而非 useGatedRefetchInterval。
+    refetchInterval: (query) =>
+      isWindowActive() && query.state.data?.running ? 5_000 : false,
+    refetchIntervalInBackground: false,
     // 保持之前的数据，避免闪烁
     placeholderData: (previousData) => previousData,
   });
@@ -38,7 +42,8 @@ export function useProxyTakeoverStatus(poll = true) {
   return useQuery({
     queryKey: proxyKeys.takeoverStatus,
     queryFn: () => proxyApi.getProxyTakeoverStatus(),
-    refetchInterval: poll ? 2000 : false,
+    refetchInterval: useGatedRefetchInterval(5_000, poll),
+    refetchIntervalInBackground: false,
     ...(poll
       ? {}
       : {

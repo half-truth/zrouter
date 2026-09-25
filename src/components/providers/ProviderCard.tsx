@@ -236,7 +236,7 @@ export function ProviderCard({
   const { data: health } = useProviderHealth(
     provider.id,
     appId,
-    isProxyAppId(appId),
+    isProxyAppId(appId) && isProxyRunning && isInFailoverQueue,
   );
 
   const fallbackUrlText = t("provider.notConfigured", {

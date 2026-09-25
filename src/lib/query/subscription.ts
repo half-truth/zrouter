@@ -8,6 +8,7 @@ import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { resolveDisplayUsage, type LastGoodSnapshot } from "./queries";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -82,10 +83,10 @@ export function useSubscriptionQuota(
   autoQuery = false,
   autoQueryIntervalMinutes = 5,
 ) {
-  const refetchInterval =
-    autoQuery && autoQueryIntervalMinutes > 0
-      ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
-      : false;
+  const refetchInterval = useGatedRefetchInterval(
+    Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000,
+    autoQuery && autoQueryIntervalMinutes > 0,
+  );
 
   const query = useQuery({
     queryKey: subscriptionKeys.quota(appId),
@@ -93,8 +94,8 @@ export function useSubscriptionQuota(
     enabled:
       enabled && ["claude", "codex", "gemini", "grokbuild"].includes(appId),
     refetchInterval,
-    refetchIntervalInBackground: Boolean(refetchInterval),
-    refetchOnWindowFocus: Boolean(refetchInterval),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime:
       autoQueryIntervalMinutes > 0
         ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
@@ -129,17 +130,17 @@ export function useCodexOauthQuotaByAccountId(
     autoQuery = false,
     autoQueryIntervalMinutes = 5,
   } = options;
-  const refetchInterval =
-    autoQuery && autoQueryIntervalMinutes > 0
-      ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
-      : false;
+  const refetchInterval = useGatedRefetchInterval(
+    Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000,
+    autoQuery && autoQueryIntervalMinutes > 0,
+  );
   const query = useQuery({
     queryKey: ["codex_oauth", "quota", accountId ?? "default"],
     queryFn: () => subscriptionApi.getCodexOauthQuota(accountId),
     enabled,
     refetchInterval,
-    refetchIntervalInBackground: Boolean(refetchInterval),
-    refetchOnWindowFocus: Boolean(refetchInterval),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime:
       autoQueryIntervalMinutes > 0
         ? Math.max(autoQueryIntervalMinutes, 1) * 60 * 1000
@@ -182,9 +183,9 @@ export function useXaiOauthQuota(
     queryKey: ["xai_oauth", "quota", accountId ?? "default"],
     queryFn: () => subscriptionApi.getXaiOauthQuota(accountId),
     enabled,
-    refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
-    refetchIntervalInBackground: autoQuery,
-    refetchOnWindowFocus: autoQuery,
+    refetchInterval: useGatedRefetchInterval(REFETCH_INTERVAL, autoQuery),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime: REFETCH_INTERVAL,
     retry: 1,
   });

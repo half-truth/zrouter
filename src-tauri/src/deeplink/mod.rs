@@ -19,6 +19,70 @@ mod utils;
 mod tests;
 
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, OnceLock};
+
+/// 深链解析失败信息，形状与 `deeplink-error` 事件载荷一致。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepLinkParseError {
+    pub url: String,
+    pub error: String,
+}
+
+/// 轻量模式（macOS 关闭到托盘 / 静默启动）已销毁 WKWebView，此时 `emit` 无处可去。
+/// 到达的请求先存进这两个单槽，由新页面挂载后经 IPC 主动拉取。
+///
+/// 每格只放一个：每条到达的深链都会立刻 `exit_lightweight_mode` 唤起窗口，第二个请求
+/// 理论上无处容身。覆盖仍会打 warn——真发生时要能从日志里看见，而不是静默丢一次。
+static PENDING_DEEPLINK: OnceLock<Mutex<Option<DeepLinkImportRequest>>> = OnceLock::new();
+static PENDING_DEEPLINK_ERROR: OnceLock<Mutex<Option<DeepLinkParseError>>> = OnceLock::new();
+
+fn pending_deeplink_slot() -> &'static Mutex<Option<DeepLinkImportRequest>> {
+    PENDING_DEEPLINK.get_or_init(|| Mutex::new(None))
+}
+
+fn pending_deeplink_error_slot() -> &'static Mutex<Option<DeepLinkParseError>> {
+    PENDING_DEEPLINK_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn take_pending_deeplink() -> Option<DeepLinkImportRequest> {
+    pending_deeplink_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+}
+
+pub(crate) fn store_pending_deeplink(request: &DeepLinkImportRequest) {
+    let mut pending = pending_deeplink_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(dropped) = pending.replace(request.clone()) {
+        log::warn!(
+            "轻量模式下的待处理深链被覆盖，丢弃前一条: resource={}, name={:?}",
+            dropped.resource,
+            dropped.name
+        );
+    }
+}
+
+pub(crate) fn take_pending_deeplink_error() -> Option<DeepLinkParseError> {
+    pending_deeplink_error_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+}
+
+pub(crate) fn store_pending_deeplink_error(error: &DeepLinkParseError) {
+    let mut pending = pending_deeplink_error_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(dropped) = pending.replace(error.clone()) {
+        log::warn!(
+            "轻量模式下的待处理深链错误被覆盖，丢弃前一条: {}",
+            dropped.error
+        );
+    }
+}
 
 // Re-export public API
 pub use mcp::import_mcp_from_deeplink;

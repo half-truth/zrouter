@@ -233,7 +233,7 @@ export function UsageTrendChart({
   };
 
   return (
-    <div className="rounded-xl border border-border/50 bg-card/40 p-6 backdrop-blur-sm">
+    <div className="rounded-xl border border-border/50 bg-card/80 p-6">
       <div className="mb-6 flex items-center justify-between">
         <h3 className="text-lg font-semibold">
           {t("usage.trends", "使用趋势")}
@@ -312,6 +312,7 @@ export function UsageTrendChart({
             <Tooltip content={<CustomTooltip />} />
             <Legend />
             <Area
+              isAnimationActive={false}
               yAxisId="tokens"
               type="monotone"
               dataKey="inputTokens"
@@ -322,6 +323,7 @@ export function UsageTrendChart({
               strokeWidth={2}
             />
             <Area
+              isAnimationActive={false}
               yAxisId="tokens"
               type="monotone"
               dataKey="outputTokens"
@@ -332,6 +334,7 @@ export function UsageTrendChart({
               strokeWidth={2}
             />
             <Area
+              isAnimationActive={false}
               yAxisId="tokens"
               type="monotone"
               dataKey="cacheCreationTokens"
@@ -342,6 +345,7 @@ export function UsageTrendChart({
               strokeWidth={2}
             />
             <Area
+              isAnimationActive={false}
               yAxisId="tokens"
               type="monotone"
               dataKey="cacheReadTokens"
@@ -352,6 +356,7 @@ export function UsageTrendChart({
               strokeWidth={2}
             />
             <Area
+              isAnimationActive={false}
               yAxisId="cost"
               type="monotone"
               dataKey="cost"

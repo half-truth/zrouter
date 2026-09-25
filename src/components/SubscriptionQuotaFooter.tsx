@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import { useSubscriptionQuota } from "@/lib/query/subscription";
 import type { QuotaTier, SubscriptionQuota } from "@/types/subscription";
+import { useRelativeTimeTicker } from "@/hooks/useRelativeTimeTicker";
 
 interface SubscriptionQuotaFooterProps {
   appId: AppId;
@@ -114,12 +115,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   const { t } = useTranslation();
 
   // 定期更新相对时间显示
-  const [now, setNow] = React.useState(Date.now());
-  React.useEffect(() => {
-    if (!quota?.queriedAt) return;
-    const interval = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(interval);
-  }, [quota?.queriedAt]);
+  const now = useRelativeTimeTicker(Boolean(quota?.queriedAt));
 
   // 无凭据 → 不显示
   if (!quota || quota.credentialStatus === "not_found") return null;

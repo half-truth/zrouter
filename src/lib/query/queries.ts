@@ -20,6 +20,7 @@ import type {
 } from "@/types";
 import { usageKeys } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 const sortProviders = (
   providers: Record<string, Provider>,
@@ -62,9 +63,9 @@ export const useProvidersQuery = (
   return useQuery({
     queryKey: ["providers", appId],
     placeholderData: keepPreviousData,
-    // 当代理服务运行时，每 10 秒刷新一次供应商列表
-    // 这样可以自动反映后端熔断器自动禁用代理目标的变更
-    refetchInterval: isProxyRunning ? 10000 : false,
+    // 代理运行时定期反映熔断器目标变化；窗口失焦时由门控自动停表。
+    refetchInterval: useGatedRefetchInterval(10_000, isProxyRunning),
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       let providers: Record<string, Provider> = {};
       let currentProviderId = "";
@@ -248,6 +249,10 @@ export const useUsageQuery = (
   options?: UseUsageQueryOptions,
 ) => {
   const { enabled = true, autoQueryInterval = 0 } = options || {};
+  const refetchInterval = useGatedRefetchInterval(
+    Math.max(autoQueryInterval, 1) * 60 * 1000, // 最小1分钟
+    autoQueryInterval > 0,
+  );
 
   // 计算 staleTime：如果有自动刷新间隔，使用该间隔；否则默认 5 分钟
   // 这样可以避免切换 app 页面时重复触发查询
@@ -260,12 +265,9 @@ export const useUsageQuery = (
     queryKey: usageKeys.script(providerId, appId),
     queryFn: async () => usageApi.query(providerId, appId),
     enabled: enabled && !!providerId,
-    refetchInterval:
-      autoQueryInterval > 0
-        ? Math.max(autoQueryInterval, 1) * 60 * 1000 // 最小1分钟
-        : false,
-    refetchIntervalInBackground: true, // 后台也继续定时查询
-    refetchOnWindowFocus: false,
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     // 用量查询面向跨境/第三方端点，单次网络抖动或瞬时 5xx 不应直接判失败。
     // 后端已把瞬时传输失败（网络/超时/读体中断）转成 Err → invoke reject，
     // retry 在此真正生效；reject 保留的旧 data 与 Ok(success:false) 的 5xx/429

@@ -77,7 +77,26 @@ export type ImportResult =
     }
   | { type: "skill"; key: string };
 
+/** 深链解析失败信息，形状与 Rust 侧 `DeepLinkParseError` 一致。 */
+export interface DeepLinkError {
+  url: string;
+  error: string;
+}
+
 export const deeplinkApi = {
+  /** macOS 轻量模式销毁 WebView 期间保存的待处理深链。 */
+  takePending: async (): Promise<DeepLinkImportRequest | null> => {
+    return invoke("take_pending_deeplink");
+  },
+
+  /**
+   * 同上，但取的是解析失败的深链。轻量模式下没有 WebView 接收 `deeplink-error`
+   * 事件，错误必须由新页面主动拉取，否则用户点链接会毫无反馈。
+   */
+  takePendingError: async (): Promise<DeepLinkError | null> => {
+    return invoke("take_pending_deeplink_error");
+  },
+
   /**
    * Parse a deep link URL
    * @param url The ccswitch:// URL to parse

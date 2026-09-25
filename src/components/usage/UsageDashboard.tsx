@@ -134,8 +134,8 @@ export function UsageDashboard({
     }
   };
 
-  // 后端写入新日志时 emit `usage-log-recorded`，本 hook 立刻 invalidate 所有
-  // usage 查询，实现实时刷新（仅在 Dashboard 挂载时生效，离开页面自动取消监听）
+  // 后端写入新日志时 emit `usage-log-recorded`；本 hook 会合并刷新，
+  // 窗口失焦时延迟到恢复焦点，避免隐藏窗口持续执行聚合查询和图表重绘。
   useUsageEventBridge();
 
   const changeRefreshInterval = async (next: number) => {

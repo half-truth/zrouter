@@ -11,8 +11,9 @@
 //! - 不阻塞写入：通知失败仅记录 warn 日志，不向上传播错误。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 use tauri::{AppHandle, Emitter};
 
@@ -23,19 +24,46 @@ pub const EVENT_USAGE_LOG_RECORDED: &str = "usage-log-recorded";
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(200);
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
-
-/// 防抖标记：true 表示已有调度任务在等待 emit，后续通知合并到该任务。
-static EMIT_SCHEDULED: AtomicBool = AtomicBool::new(false);
+static NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+static NOTIFICATION_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// 在应用 setup 阶段调用一次，注入 AppHandle。
 ///
 /// 重复调用是无害的（OnceLock 仅首次写入生效），但应用启动期只该被
 /// `lib.rs::run` 调一次。
 pub fn init(handle: AppHandle) {
+    let notify = NOTIFY.get_or_init(|| Arc::new(Notify::new())).clone();
     if APP_HANDLE.set(handle).is_err() {
         log::debug!("usage_events::init 重复调用，已忽略");
     } else {
+        if !WORKER_STARTED.swap(true, Ordering::AcqRel) {
+            tauri::async_runtime::spawn(run_debounce_worker(notify));
+        }
         log::info!("[usage-event] AppHandle 已注入，事件推送启用");
+    }
+}
+
+async fn run_debounce_worker(notify: Arc<Notify>) {
+    loop {
+        notify.notified().await;
+
+        // A permit can remain after a burst was already drained. Ignore it
+        // unless a caller has marked a new notification pending.
+        if !NOTIFICATION_PENDING.swap(false, Ordering::AcqRel) {
+            continue;
+        }
+
+        // Fixed windows avoid starvation during sustained traffic. Notify stores
+        // at most one permit, so writes arriving during this sleep are coalesced
+        // into the next window instead of extending this one forever.
+        tokio::time::sleep(DEBOUNCE_WINDOW).await;
+
+        if let Some(handle) = APP_HANDLE.get() {
+            if let Err(e) = handle.emit(EVENT_USAGE_LOG_RECORDED, ()) {
+                log::warn!("emit {EVENT_USAGE_LOG_RECORDED} 失败: {e}");
+            }
+        }
     }
 }
 
@@ -48,26 +76,12 @@ pub fn notify_log_recorded() {
     TEST_NOTIFY_COUNT.with(|count| count.set(count.get().saturating_add(1)));
 
     // AppHandle 未注入（典型出现在单元测试或 setup 之前）：直接放弃。
-    let Some(handle) = APP_HANDLE.get() else {
+    let Some(notify) = NOTIFY.get() else {
         return;
     };
 
-    // 已有调度任务：本次通知被合并到既有任务里，无需再起线程。
-    if EMIT_SCHEDULED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    let handle = handle.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(DEBOUNCE_WINDOW);
-        // 必须先清标志再 emit：万一 emit 期间又有新通知进来，
-        // 下一轮防抖窗口会重新调度，不会丢失。
-        EMIT_SCHEDULED.store(false, Ordering::Release);
-
-        if let Err(e) = handle.emit(EVENT_USAGE_LOG_RECORDED, ()) {
-            log::warn!("emit {EVENT_USAGE_LOG_RECORDED} 失败: {e}");
-        }
-    });
+    NOTIFICATION_PENDING.store(true, Ordering::Release);
+    notify.notify_one();
 }
 
 #[cfg(test)]

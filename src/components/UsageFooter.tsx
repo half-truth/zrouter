@@ -7,6 +7,7 @@ import { UsageData, Provider } from "@/types";
 import { TierBadge } from "@/components/SubscriptionQuotaFooter";
 import type { QuotaTier } from "@/types/subscription";
 import { isAdditiveAppId } from "@/config/appConfig";
+import { useRelativeTimeTicker } from "@/hooks/useRelativeTimeTicker";
 
 interface UsageFooterProps {
   provider: Provider;
@@ -75,18 +76,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
   });
 
   // 🆕 定期更新当前时间，用于刷新相对时间显示
-  const [now, setNow] = React.useState(Date.now());
-
-  React.useEffect(() => {
-    if (!lastQueriedAt) return;
-
-    // 每30秒更新一次当前时间，触发相对时间显示的刷新
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 30000); // 30秒
-
-    return () => clearInterval(interval);
-  }, [lastQueriedAt]);
+  const now = useRelativeTimeTicker(Boolean(lastQueriedAt));
 
   // 只在启用用量查询且有数据时显示。后端把瞬时传输失败转成了 reject：有缓存
   // 成功值时 react-query 保留 data 照常展示；首次查询就失败则 data 为空——

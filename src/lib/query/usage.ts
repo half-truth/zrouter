@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 import type {
   LogFilters,
   UsageRangeSelection,
@@ -13,6 +14,25 @@ type UsageQueryOptions = {
   refetchInterval?: number | false;
   refetchIntervalInBackground?: boolean;
 };
+
+/**
+ * Auto-refresh policy for usage queries: callers declare *how often*, this
+ * decides *whether* to poll. While the window is not active the interval
+ * collapses to `false` so the query idles instead of hitting SQLite behind the
+ * user's back; React Query replays the last fetch once on refocus.
+ *
+ * The policy lives here rather than at each call site so callers never need to
+ * know about window visibility, and so any future usage query inherits it
+ * without repeating the decision.
+ */
+function useUsageRefetchInterval(requested?: number | false): number | false {
+  // An explicit `false` becomes a 0 cadence, which the shared gate collapses —
+  // expressed as one expression so the hook below is called on every render
+  // even when a caller toggles the option between renders.
+  return useGatedRefetchInterval(
+    requested === false ? 0 : (requested ?? DEFAULT_REFETCH_INTERVAL_MS),
+  );
+}
 
 type RequestLogsQueryArgs = {
   filters: LogFilters;
@@ -164,6 +184,7 @@ export function useUsageSummary(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.summary(
@@ -183,7 +204,7 @@ export function useUsageSummary(
         effective.model,
       );
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -193,6 +214,7 @@ export function useUsageSummaryByApp(
   filters?: Pick<UsageScopeFilters, "providerName" | "model">,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   return useQuery({
     queryKey: usageKeys.summaryByApp(
       range.preset,
@@ -210,7 +232,7 @@ export function useUsageSummaryByApp(
         filters?.model,
       );
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -220,6 +242,7 @@ export function useUsageTrends(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.trends(
@@ -239,7 +262,7 @@ export function useUsageTrends(
         effective.model,
       );
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -249,6 +272,7 @@ export function useProviderStats(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.providerStats(
@@ -268,7 +292,7 @@ export function useProviderStats(
         effective.model,
       );
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -278,6 +302,7 @@ export function useModelStats(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.modelStats(
@@ -297,7 +322,7 @@ export function useModelStats(
         effective.model,
       );
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -309,6 +334,7 @@ export function useRequestLogs({
   pageSize = 20,
   options,
 }: RequestLogsQueryArgs) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const key: RequestLogsKey = {
     preset: range.preset,
     customStartDate: range.customStartDate,
@@ -326,7 +352,7 @@ export function useRequestLogs({
       const effectiveFilters = { ...filters, ...resolveUsageRange(range) };
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize);
     },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }

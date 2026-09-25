@@ -209,13 +209,9 @@ const TOOL_APP_IDS: Record<ToolName, AppId> = {
 };
 
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
-// 设置页用 Radix Tabs，非激活 Tab 会被卸载——每次切回「关于」都重挂 AboutSection，若都
-// 全量重查纯属浪费。用「模块级」缓存（生命周期 = JS 模块 = 应用会话，不随组件卸载销毁）
-// 跨重挂存活：重挂时若缓存仍新鲜（距上次全量加载 < TTL）直接复用、跳过探测；超期或用户
-// 手动「刷新」才强制重查。at = 最近一次「全量加载」完成时刻；单工具刷新（切 shell / 升级
-// 后）只更新数据、不重置 at，避免一次局部刷新把整体 TTL 续命。
-const TOOL_VERSIONS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 分钟
-let toolVersionsCache: { data: ToolVersion[]; at: number } | null = null;
+// 设置页用 Radix Tabs，非激活 Tab 会被卸载，因此用模块级缓存跨重挂复用用户已经
+// 主动检测过的结果。打开 About 本身不触发探测；只有用户点击检测/刷新才更新缓存。
+let toolVersionsCache: { data: ToolVersion[] } | null = null;
 // 应用自身版本（getVersion，本地毫秒级、无网络）也缓存一份，纯为重挂时免去 loading 闪烁。
 let appVersionCache: string | null = null;
 
@@ -248,10 +244,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>(
     () => toolVersionsCache?.data ?? [],
   );
-  // 有缓存（哪怕已超期）就先展示旧值、初始不 loading；超期时由挂载副作用触发后台
-  // 重查（stale-while-revalidate）。无缓存（首次）才从 loading 起步。
-  const [isLoadingTools, setIsLoadingTools] = useState(
-    () => toolVersionsCache === null,
+  // 工具版本仅在用户主动点击检测后获取。首次打开 About 不自动启动 CLI、
+  // shell 或网络探测；缓存只用于复用用户已经触发过的结果。
+  const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [hasDetectedTools, setHasDetectedTools] = useState(
+    () => (toolVersionsCache?.data.length ?? 0) > 0,
   );
   const [toolActions, setToolActions] = useState<
     Partial<Record<ToolName, ToolLifecycleAction>>
@@ -328,13 +325,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         );
 
         setToolVersions((prev) => mergeToolVersions(prev, updated));
-        // 同步进模块缓存，供切 Tab 重挂时复用。时间戳沿用上次「全量加载」的（单工具
-        // 刷新不算全量、不重置 TTL）；缓存为空时以 at=0 起步——0 是「尚未完成全量加载」
-        // 的过期哨兵，确保探测中途切走/切回时，残缺缓存被判过期而触发重查，而非把半套
-        // 数据当成完整结果复用。真实时间戳只由 loadAllToolVersions 的 finally 盖上。
+        // 同步进模块缓存，供切 Tab 重挂时复用。单工具刷新与全量手动检测
+        // 使用同一份已确认结果，不会在页面重挂时自动触发网络或子进程探测。
         toolVersionsCache = {
           data: mergeToolVersions(toolVersionsCache?.data ?? [], updated),
-          at: toolVersionsCache?.at ?? 0,
         };
 
         // 返回刷新结果，调用方可据此判断版本是否真的探到（避免读 state 撞 stale closure）。
@@ -353,42 +347,21 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     [],
   );
 
-  const loadAllToolVersions = useCallback(
-    async (options?: { force?: boolean }) => {
-      const force = options?.force ?? false;
-      // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过 6 个 `--version`
-      // 子进程 + 6 个 latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
-      if (
-        !force &&
-        toolVersionsCache &&
-        Date.now() - toolVersionsCache.at < TOOL_VERSIONS_CACHE_TTL_MS
-      ) {
-        setToolVersions(toolVersionsCache.data);
-        setIsLoadingTools(false);
-        return;
-      }
-      setIsLoadingTools(true);
-      try {
-        // 逐工具并发探测：每个工具一完成就合并进 toolVersions（并写模块缓存）、清掉自己
-        // 的 loadingTools 标志，对应卡片随即独立刷新——而非等全部探测完才一次性显示（后端
-        // 原本对 6 个工具串行 await，总耗时累加；并发后压成「最慢的那一个」）。refreshTool-
-        // Versions 已内建按 name 合并 + per-tool loading + try/catch 兜底（单工具失败返回 []
-        // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
-        await Promise.all(
-          TOOL_NAMES.map((toolName) =>
-            refreshToolVersions([toolName], wslShellByTool),
-          ),
-        );
-      } finally {
-        // 全量探测结束：把缓存时间戳刷新为现在，标记「刚完成一次全量加载」、重置 TTL。
-        if (toolVersionsCache) {
-          toolVersionsCache = { ...toolVersionsCache, at: Date.now() };
-        }
-        setIsLoadingTools(false);
-      }
-    },
-    [wslShellByTool, refreshToolVersions],
-  );
+  const loadAllToolVersions = useCallback(async () => {
+    setIsLoadingTools(true);
+    try {
+      // 一次 IPC 提交完整工具列表。后端会顺序处理请求，避免前端同时启动 8 组
+      // shell/CLI/网络探测造成瞬时高占用。
+      const updated = await refreshToolVersions(
+        [...TOOL_NAMES],
+        wslShellByTool,
+      );
+      if (updated.length === 0) return;
+      setHasDetectedTools(true);
+    } finally {
+      setIsLoadingTools(false);
+    }
+  }, [wslShellByTool, refreshToolVersions]);
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
     const wslShell = value === "auto" ? null : value;
@@ -440,14 +413,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     };
 
     void loadAppVersion();
-    void loadAllToolVersions();
     return () => {
       active = false;
     };
-    // Mount-only: loadAllToolVersions is intentionally excluded to avoid
-    // re-fetching all tools whenever wslShellByTool changes. Single-tool
-    // refreshes are handled by refreshToolVersions in the shell/flag handlers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ... (handlers like handleOpenReleaseNotes, handleCheckUpdate) ...
@@ -975,12 +943,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             >
               <Github className="h-3.5 w-3.5" />
               {t("settings.github")}
-              <span
-                aria-hidden="true"
-                className="inline-block animate-[spin_4s_linear_infinite] motion-reduce:animate-none"
-              >
-                ⭐
-              </span>
+              <span aria-hidden="true">⭐</span>
             </Button>
             <Button
               type="button"
@@ -1065,7 +1028,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               variant="outline"
               className="h-7 gap-1.5 text-xs"
               onClick={() => handleDiagnoseAll()}
-              disabled={isLoadingTools || isAnyBusy || isDiagnosingAll}
+              disabled={
+                !hasDetectedTools ||
+                isLoadingTools ||
+                isAnyBusy ||
+                isDiagnosingAll
+              }
             >
               {isDiagnosingAll ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1080,7 +1048,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               size="sm"
               variant="outline"
               className="h-7 gap-1.5 text-xs"
-              onClick={() => loadAllToolVersions({ force: true })}
+              onClick={() => void loadAllToolVersions()}
               disabled={isLoadingTools || isAnyBusy}
             >
               <RefreshCw
@@ -1088,7 +1056,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   isLoadingTools ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
                 }
               />
-              {isLoadingTools ? t("common.refreshing") : t("common.refresh")}
+              {isLoadingTools
+                ? t("common.refreshing")
+                : t("settings.toolDetectVersions")}
             </Button>
             <Button
               size="sm"
@@ -1099,7 +1069,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 })
               }
               disabled={
-                isLoadingTools || isAnyBusy || updatableToolNames.length === 0
+                !hasDetectedTools ||
+                isLoadingTools ||
+                isAnyBusy ||
+                updatableToolNames.length === 0
               }
             >
               {batchAction === "update" ? (
@@ -1119,14 +1092,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             const tool = toolVersionByName.get(toolName);
             const appConfig = APP_ICON_MAP[TOOL_APP_IDS[toolName]];
             const displayName = TOOL_DISPLAY_NAMES[toolName];
-            // 单卡片 loading 用「结果是否已到」而非「整批是否结束」驱动，实现渐进式刷新：
-            //   - loadingTools[t]：本工具探测在途（首次加载或单工具刷新）；
-            //   - isLoadingTools && !has(t)：整批进行中且该工具尚未返回——覆盖首帧/刷新时
-            //     未完成卡片的 loading 外观。某工具结果一落进 toolVersions，has(t) 即为 true，
-            //     该卡片立刻脱离 loading（哪怕全局 isLoadingTools 还为 true），其它卡片不受影响。
+            // 首次打开 About 不探测。检测完成前保持“未检测”状态，不能把未知结果
+            // 当成“未安装”而错误展示安装按钮。
+            const hasVersionResult = toolVersionByName.has(toolName);
             const isToolVersionLoading =
               Boolean(loadingTools[toolName]) ||
-              (isLoadingTools && !toolVersionByName.has(toolName));
+              (isLoadingTools && !hasVersionResult);
             const isOutdated = isUpdateAvailable(
               tool?.version,
               tool?.latest_version,
@@ -1134,9 +1105,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             // 已安装却跑不起来（如 Node 版本不达标）：用它区分卡片文案与按钮，避免把
             // "装了跑不起来"误判成"未安装"而给出无用的安装按钮（重装同一版本解决不了）。
             const installedButBroken = Boolean(tool?.installed_but_broken);
-            // loading 和 broken 都没有可执行动作；其余按是否已装/是否过期选择。
+            // 未检测、检测中和已安装但损坏时都没有可执行动作；其余按是否已装/是否过期选择。
             const action: ToolLifecycleAction | null =
-              isToolVersionLoading || installedButBroken
+              !hasDetectedTools ||
+              !hasVersionResult ||
+              isToolVersionLoading ||
+              installedButBroken
                 ? null
                 : !tool?.version
                   ? "install"
@@ -1144,7 +1118,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     ? "update"
                     : null;
             const runningAction = toolActions[toolName];
-            const title = tool?.version || tool?.error || t("common.unknown");
+            const title =
+              tool?.version ||
+              tool?.error ||
+              t("settings.toolVersionsNotDetected");
             const conflicts = toolDiagnostics[toolName];
 
             return (
@@ -1184,8 +1161,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     ) : (
                       <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-green-500" />
                     )
-                  ) : (
+                  ) : hasDetectedTools && hasVersionResult ? (
                     <AlertCircle className="mt-1 h-4 w-4 shrink-0 text-yellow-500" />
+                  ) : (
+                    <Info className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
                   )}
                 </div>
 
@@ -1200,11 +1179,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     >
                       {isToolVersionLoading
                         ? t("common.loading")
-                        : tool?.version
-                          ? tool.version
-                          : installedButBroken
-                            ? t("settings.installedNotRunnable")
-                            : t("common.notInstalled")}
+                        : !hasDetectedTools || !hasVersionResult
+                          ? t("settings.toolVersionsNotDetected")
+                          : tool?.version
+                            ? tool.version
+                            : installedButBroken
+                              ? t("settings.installedNotRunnable")
+                              : t("common.notInstalled")}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -1214,7 +1195,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     <span className="min-w-0 truncate font-mono text-foreground">
                       {isToolVersionLoading
                         ? t("common.loading")
-                        : tool?.latest_version || t("common.unknown")}
+                        : !hasDetectedTools || !hasVersionResult
+                          ? t("settings.toolVersionsNotDetected")
+                          : tool?.latest_version || t("common.unknown")}
                     </span>
                   </div>
                   {!isToolVersionLoading && !tool?.version && tool?.error && (
@@ -1293,6 +1276,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     // 已安装但跑不起来：重装无济于事，不给按钮，给一句指向环境的提示。
                     <span className="text-xs text-yellow-600 dark:text-yellow-400">
                       {t("settings.toolCheckEnv")}
+                    </span>
+                  ) : !hasDetectedTools || !hasVersionResult ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.toolVersionsNotDetected")}
                     </span>
                   ) : action ? (
                     <Button

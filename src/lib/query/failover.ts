@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { proxyKeys } from "@/lib/query/proxy";
 import { getAppLabel } from "@/config/appConfig";
+import { useGatedRefetchInterval, useWindowActive } from "@/lib/windowActivity";
 
 // ========== 熔断器 Hooks ==========
 
@@ -16,11 +17,15 @@ export function useProviderHealth(
   appType: string,
   enabled = true,
 ) {
+  const windowActive = useWindowActive();
+  const pollingEnabled = enabled && !!providerId && !!appType;
   return useQuery({
     queryKey: ["providerHealth", providerId, appType],
     queryFn: () => failoverApi.getProviderHealth(providerId, appType),
-    enabled: enabled && !!providerId && !!appType,
-    refetchInterval: 5000, // 每 5 秒刷新一次
+    enabled: pollingEnabled && windowActive,
+    refetchInterval: useGatedRefetchInterval(15_000, pollingEnabled),
+    refetchIntervalInBackground: false,
+    staleTime: 10_000,
     retry: false,
   });
 }
@@ -91,7 +96,8 @@ export function useCircuitBreakerStats(providerId: string, appType: string) {
     queryKey: ["circuitBreakerStats", providerId, appType],
     queryFn: () => failoverApi.getCircuitBreakerStats(providerId, appType),
     enabled: !!providerId && !!appType,
-    refetchInterval: 5000, // 每 5 秒刷新一次
+    refetchInterval: useGatedRefetchInterval(5_000),
+    refetchIntervalInBackground: false,
   });
 }
 

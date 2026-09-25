@@ -10,6 +10,7 @@ import type {
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
 } from "@/lib/api";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 type PollingState = "idle" | "polling" | "success" | "error";
 type LoginRequest = {
@@ -52,7 +53,11 @@ export function useManagedAuth(
     // A rejected xAI refresh token is persisted as `requires_reauth` by the
     // proxy hot path. Periodically refresh local status so an already-open Auth
     // Center stops showing the account as logged in without requiring a reload.
-    refetchInterval: authProvider === "xai_oauth" ? 15_000 : false,
+    refetchInterval: useGatedRefetchInterval(
+      15_000,
+      authProvider === "xai_oauth",
+    ),
+    refetchIntervalInBackground: false,
   });
 
   const stopPolling = useCallback(() => {

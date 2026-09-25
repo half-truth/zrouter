@@ -4,6 +4,38 @@ use tauri::Manager;
 
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseToTrayAction {
+    HideWindow,
+    DestroyWebView,
+}
+
+pub(crate) fn close_to_tray_action(target_os: &str) -> CloseToTrayAction {
+    if target_os == "macos" {
+        CloseToTrayAction::DestroyWebView
+    } else {
+        CloseToTrayAction::HideWindow
+    }
+}
+
+pub(crate) fn enter_close_to_tray_mode(app: &tauri::AppHandle) -> Result<(), String> {
+    match close_to_tray_action(std::env::consts::OS) {
+        CloseToTrayAction::DestroyWebView => enter_lightweight_mode(app),
+        CloseToTrayAction::HideWindow => {
+            if let Some(window) = app.get_webview_window("main") {
+                window
+                    .hide()
+                    .map_err(|error| format!("隐藏主窗口失败: {error}"))?;
+                #[cfg(target_os = "windows")]
+                window
+                    .set_skip_taskbar(true)
+                    .map_err(|error| format!("设置 Windows 托盘模式失败: {error}"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -97,4 +129,27 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub fn is_lightweight_mode() -> bool {
     LIGHTWEIGHT_MODE.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{close_to_tray_action, CloseToTrayAction};
+
+    #[test]
+    fn macos_close_to_tray_destroys_webview_to_release_gpu_processes() {
+        assert_eq!(
+            close_to_tray_action("macos"),
+            CloseToTrayAction::DestroyWebView
+        );
+    }
+
+    #[test]
+    fn other_platforms_keep_existing_hide_window_behavior() {
+        for target_os in ["windows", "linux"] {
+            assert_eq!(
+                close_to_tray_action(target_os),
+                CloseToTrayAction::HideWindow
+            );
+        }
+    }
 }

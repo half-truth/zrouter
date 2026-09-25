@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
 import type { QuotaTier } from "@/types/subscription";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 const REFETCH_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
@@ -54,9 +55,9 @@ export function useCopilotQuota(
       };
     },
     enabled,
-    refetchInterval: autoQuery ? REFETCH_INTERVAL : false,
-    refetchIntervalInBackground: autoQuery,
-    refetchOnWindowFocus: autoQuery,
+    refetchInterval: useGatedRefetchInterval(REFETCH_INTERVAL, autoQuery),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime: REFETCH_INTERVAL,
     retry: 1,
   });
