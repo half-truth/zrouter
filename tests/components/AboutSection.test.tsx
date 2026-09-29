@@ -59,6 +59,7 @@ const toolNames = [
   "openclaw",
   "hermes",
   "pi",
+  "mcode",
 ];
 
 function versionResult(name: string) {
