@@ -1,0 +1,124 @@
+name: Build macOS App
+
+# Personal-use build: produces a downloadable CC Switch.app, nothing else.
+# No Release is created and no asset is published — the artifact stays in the
+# Actions UI for 30 days. Manual trigger only: a release build is ~20 minutes
+# and has no business firing on every push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build CC Switch.app
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # rustup picks up rust-toolchain.toml (pins the toolchain) from the
+      # checkout, the same way ci.yml relies on it.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
+
+      # Separate cache key from ci.yml: this builds the release profile, the
+      # other builds the test profile, and sharing the key makes both thrash.
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      # vite build strips types without checking them, so `tauri build` would
+      # happily produce an .app from code that does not type-check. These two
+      # run in ~2 minutes and fail before the 18-minute release build starts.
+      - name: TypeScript type check
+        run: pnpm typecheck
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      # No --target, so the runner compiles its native architecture. Record it
+      # so a mismatch against the downloading Mac is obvious from the summary
+      # instead of showing up later as an app that will not open.
+      - name: Report runner architecture
+        run: |
+          echo "### Runner architecture: $(uname -m)" >> "$GITHUB_STEP_SUMMARY"
+          uname -m
+
+      # Mirrors scripts/build-and-install-macos.sh: --bundles app skips the
+      # slow DMG step, and createUpdaterArtifacts is off because there is no
+      # TAURI_SIGNING_PRIVATE_KEY. Without that override `tauri build` exits
+      # non-zero *after* the .app is already bundled.
+      - name: Build Tauri App
+        run: |
+          pnpm tauri build --bundles app \
+            -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Package .app
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          BUNDLE_DIR="src-tauri/target/release/bundle/macos"
+          APP="$BUNDLE_DIR/CC Switch.app"
+          if [ ! -x "$APP/Contents/MacOS/cc-switch" ]; then
+            echo "error: bundle is missing or not executable: $APP" >&2
+            exit 1
+          fi
+          # tar, not the artifact's own zip: a .app carries symlinks and the
+          # executable bit, which upload-artifact's zip does not preserve.
+          NAME="CC-Switch-${{ github.run_number }}-macos-$ARCH.app.tar.gz"
+          tar -czf "$NAME" -C "$BUNDLE_DIR" "CC Switch.app"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "$NAME"
+
+      - name: Upload .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: ${{ steps.pkg.outputs.name }}
+          retention-days: 30
+          if-no-files-found: error
