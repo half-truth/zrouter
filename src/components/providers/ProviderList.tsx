@@ -48,6 +48,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { usePiCurrentState } from "@/lib/query/pi";
+import { useDirectProviderId } from "@/lib/query/proxy";
 import { isProxyAppId } from "@/config/appConfig";
 import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
@@ -166,6 +167,12 @@ export function ProviderList({
     supportsFailover &&
     isProxyTakeover === true &&
     isAutoFailoverEnabled === true;
+
+  // 路由模式下「当前」是路由到的那家；直连供应商另外标出来，退出路由时写回它。
+  const { data: directProviderId } = useDirectProviderId(
+    appId,
+    supportsFailover && isProxyTakeover === true,
+  );
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -488,6 +495,12 @@ export function ProviderList({
                 isTesting={isChecking(provider.id)}
                 isProxyRunning={supportsFailover && isProxyRunning}
                 isProxyTakeover={supportsFailover && isProxyTakeover}
+                isDirectProvider={
+                  supportsFailover &&
+                  isProxyTakeover &&
+                  !isCurrent &&
+                  provider.id === directProviderId
+                }
                 isAutoFailoverEnabled={isFailoverModeActive}
                 failoverPriority={getFailoverPriority(provider.id)}
                 isInFailoverQueue={isInFailoverQueue(provider.id)}
@@ -645,6 +658,7 @@ interface SortableProviderCardProps {
   isTesting: boolean;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
+  isDirectProvider: boolean;
   isAutoFailoverEnabled: boolean;
   failoverPriority?: number;
   isInFailoverQueue: boolean;
@@ -678,6 +692,7 @@ function SortableProviderCard({
   isTesting,
   isProxyRunning,
   isProxyTakeover,
+  isDirectProvider,
   isAutoFailoverEnabled,
   failoverPriority,
   isInFailoverQueue,
@@ -727,6 +742,7 @@ function SortableProviderCard({
         isTesting={isTesting}
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
+        isDirectProvider={isDirectProvider}
         dragHandleProps={{
           attributes,
           listeners,
