@@ -29,6 +29,14 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
+const ACCEPT_RETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+const ACCEPT_RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// accept() 连续失败时的退避节奏：翻倍到上限为止。一次成功的 accept 会把它重置。
+fn next_accept_retry_delay(current: std::time::Duration) -> std::time::Duration {
+    current.saturating_mul(2).min(ACCEPT_RETRY_MAX_DELAY)
+}
+
 /// 代理服务器状态（共享）
 #[derive(Clone)]
 pub struct ProxyState {
@@ -148,14 +156,31 @@ impl ProxyServer {
         let state = self.state.clone();
         let handle = tokio::spawn(async move {
             let mut shutdown_rx = shutdown_rx;
+            let mut accept_retry_delay = ACCEPT_RETRY_INITIAL_DELAY;
             loop {
                 tokio::select! {
                     result = listener.accept() => {
                         let (stream, _remote_addr) = match result {
-                            Ok(v) => v,
+                            Ok(v) => {
+                                // 恢复了就立刻回到快速失败节奏，别让之前攒下的退避
+                                // 拖慢后续正常请求。
+                                accept_retry_delay = ACCEPT_RETRY_INITIAL_DELAY;
+                                v
+                            }
                             Err(e) => {
                                 log::error!("[{SRV}] accept 失败: {e}", SRV = log_srv::ACCEPT_ERR);
-                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                // accept() 持续失败（fd 耗尽、端口被占）时，固定 50ms
+                                // 重试等于每秒 20 次唤醒加一条错误日志——错误本身往往
+                                // 不会自愈，退避才能把 CPU 交回去。sleep 期间同时盯着
+                                // shutdown，否则退避会把停止代理卡住最多一个周期。
+                                tokio::select! {
+                                    _ = tokio::time::sleep(accept_retry_delay) => {
+                                        accept_retry_delay = next_accept_retry_delay(accept_retry_delay);
+                                    }
+                                    _ = &mut shutdown_rx => {
+                                        break;
+                                    }
+                                }
                                 continue;
                             }
                         };
@@ -467,6 +492,19 @@ mod tests {
     use axum::http::{header, HeaderMap, StatusCode};
     use serde_json::{json, Value};
     use tokio::sync::Mutex;
+
+    #[test]
+    fn accept_retry_backoff_grows_and_is_capped() {
+        let delay = ACCEPT_RETRY_INITIAL_DELAY;
+        assert_eq!(
+            next_accept_retry_delay(delay),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(
+            next_accept_retry_delay(ACCEPT_RETRY_MAX_DELAY),
+            ACCEPT_RETRY_MAX_DELAY
+        );
+    }
 
     #[derive(Debug)]
     struct CapturedRequest {

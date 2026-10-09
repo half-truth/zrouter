@@ -154,7 +154,7 @@ describe("AppCountBar", () => {
       />,
     );
 
-    const bar = screen.getByText("2 items").closest(".glass");
+    const bar = screen.getByText("2 items").closest(".glass-solid");
     expect(bar).toHaveClass("items-center");
     expect(bar).not.toHaveClass("flex-col");
   });

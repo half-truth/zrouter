@@ -993,3 +993,28 @@ fn test_infer_homepage_from_endpoint_without_homepage() {
         Some("https://cubence.com".to_string())
     );
 }
+
+#[test]
+fn test_pending_deeplink_round_trip_drains_the_slot() {
+    let url = "ccswitch://v1/import?resource=provider&app=claude&name=Pending";
+    let request = parse_deeplink_url(url).unwrap();
+
+    super::store_pending_deeplink(&request);
+    let taken = super::take_pending_deeplink().expect("槽里应有暂存的请求");
+    assert_eq!(taken.name.as_deref(), Some("Pending"));
+
+    // take 是 drain 语义：拉过一次之后必须为空，否则新页面会把同一条深链弹两遍。
+    assert!(super::take_pending_deeplink().is_none());
+}
+
+#[test]
+fn test_pending_deeplink_error_round_trip() {
+    super::store_pending_deeplink_error(&super::DeepLinkParseError {
+        url: "ccswitch://v1/import?resource=bogus".to_string(),
+        error: "unknown resource".to_string(),
+    });
+
+    let taken = super::take_pending_deeplink_error().expect("槽里应有暂存的错误");
+    assert_eq!(taken.error, "unknown resource");
+    assert!(super::take_pending_deeplink_error().is_none());
+}

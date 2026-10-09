@@ -1,6 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { DeepLinkImportRequest, deeplinkApi } from "@/lib/api/deeplink";
+import {
+  DeepLinkImportRequest,
+  deeplinkApi,
+  type DeepLinkError,
+} from "@/lib/api/deeplink";
 import { parseDeepLinkConfigPreview } from "@/utils/deepLinkConfigPreview";
 import {
   Dialog,
@@ -26,11 +30,6 @@ import {
   riskI18nKey,
 } from "@/utils/deeplinkRisk";
 import { decodeBase64Utf8 } from "@/lib/utils/base64";
-
-interface DeeplinkError {
-  url: string;
-  error: string;
-}
 
 export function DeepLinkImportDialog() {
   const { t } = useTranslation();
@@ -58,45 +57,74 @@ export function DeepLinkImportDialog() {
   };
 
   useEffect(() => {
-    // Listen for deep link import events
-    const unlistenImport = listen<DeepLinkImportRequest>(
-      "deeplink-import",
-      async (event) => {
-        // If config is present, merge it to get the complete configuration
-        if (event.payload.config || event.payload.configUrl) {
-          try {
-            const mergedRequest = await deeplinkApi.mergeDeeplinkConfig(
-              event.payload,
-            );
-            setRequest(mergedRequest);
-          } catch (error) {
-            console.error("Failed to merge config:", error);
-            toast.error(t("deeplink.configMergeError"), {
-              description:
-                error instanceof Error ? error.message : String(error),
-            });
-            // Fall back to original request
-            setRequest(event.payload);
-          }
-        } else {
-          setRequest(event.payload);
+    let disposed = false;
+    const unlistenFns: Array<() => void> = [];
+
+    const showRequest = async (incoming: DeepLinkImportRequest) => {
+      // If config is present, merge it to get the complete configuration
+      if (incoming.config || incoming.configUrl) {
+        try {
+          const mergedRequest = await deeplinkApi.mergeDeeplinkConfig(incoming);
+          if (!disposed) setRequest(mergedRequest);
+        } catch (error) {
+          console.error("Failed to merge config:", error);
+          toast.error(t("deeplink.configMergeError"), {
+            description: error instanceof Error ? error.message : String(error),
+          });
+          // Fall back to original request
+          if (!disposed) setRequest(incoming);
         }
+      } else if (!disposed) {
+        setRequest(incoming);
+      }
 
-        setIsOpen(true);
-      },
-    );
+      if (!disposed) setIsOpen(true);
+    };
 
-    // Listen for deep link error events
-    const unlistenError = listen<DeeplinkError>("deeplink-error", (event) => {
-      console.error("Deep link error:", event.payload);
+    const showError = (payload: DeepLinkError) => {
+      console.error("Deep link error:", payload);
       toast.error(t("deeplink.parseError"), {
-        description: event.payload.error,
+        description: payload.error,
       });
-    });
+    };
+
+    // 注册事件监听后再拉取 Rust 端待处理队列，避免 WebView 重建期间
+    // 深链已到达、但前端尚未挂载监听器而丢失。两个槽（请求 / 错误）都要排空：
+    // 轻量模式下 emit 无处可去，解析失败若不主动拉取就等于用户的点击被静默丢弃。
+    void Promise.all([
+      listen<DeepLinkImportRequest>("deeplink-import", (event) => {
+        void showRequest(event.payload);
+      }),
+      listen<DeepLinkError>("deeplink-error", (event) => {
+        showError(event.payload);
+      }),
+    ])
+      .then(async ([removeImport, removeError]) => {
+        if (disposed) {
+          removeImport();
+          removeError();
+          return;
+        }
+        unlistenFns.push(removeImport, removeError);
+        const [pending, pendingError] = await Promise.all([
+          deeplinkApi.takePending(),
+          deeplinkApi.takePendingError(),
+        ]);
+        if (disposed) return;
+        if (pending) {
+          await showRequest(pending);
+        }
+        if (pendingError) {
+          showError(pendingError);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to initialize deep link listener:", error);
+      });
 
     return () => {
-      unlistenImport.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      disposed = true;
+      unlistenFns.forEach((unlisten) => unlisten());
     };
   }, [t]);
 

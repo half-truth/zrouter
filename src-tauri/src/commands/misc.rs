@@ -1060,8 +1060,27 @@ async fn get_single_tool_version_impl(
     // 使用全局 HTTP 客户端（已包含代理配置）
     let client = crate::proxy::http_client::get();
 
-    // 1. 获取本地版本
-    let probe = probe_local_version(tool, wsl_distro.as_deref(), wsl_shell, wsl_shell_flag);
+    // 1. 获取本地版本。探测要同步等 CLI / shell 子进程（macOS 上是
+    // `$SHELL -lic`，可能拉起一整套登录 shell profile），必须移出 Tokio async
+    // worker，否则一个工具的探测会把整个运行时线程池卡住——代理转发与托盘
+    // 刷新都在同一个池上。
+    let probe_tool = tool.to_string();
+    let probe_wsl_distro = wsl_distro.clone();
+    let probe_wsl_shell = wsl_shell.map(str::to_string);
+    let probe_wsl_shell_flag = wsl_shell_flag.map(str::to_string);
+    let probe = tokio::task::spawn_blocking(move || {
+        probe_local_version(
+            &probe_tool,
+            probe_wsl_distro.as_deref(),
+            probe_wsl_shell.as_deref(),
+            probe_wsl_shell_flag.as_deref(),
+        )
+    })
+    .await
+    .unwrap_or_else(|error| {
+        log::warn!("工具版本探测任务失败 [{tool}]: {error}");
+        ShellProbe::NotFound(NOT_INSTALLED.to_string())
+    });
     let (local_version, local_error, installed_but_broken) = match probe {
         ShellProbe::Found(v) => (Some(v), None, false),
         ShellProbe::FoundButFailed(e) => (None, Some(e), true),

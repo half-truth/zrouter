@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
 import { authApi, settingsApi } from "@/lib/api";
 import { CODEX_OAUTH_DUPLICATE_ACCOUNT_ERROR } from "@/lib/api/auth";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 import { copyText } from "@/lib/clipboard";
 import type {
   ManagedAuthProvider,
@@ -52,7 +53,10 @@ export function useManagedAuth(
     // A rejected xAI refresh token is persisted as `requires_reauth` by the
     // proxy hot path. Periodically refresh local status so an already-open Auth
     // Center stops showing the account as logged in without requiring a reload.
-    refetchInterval: authProvider === "xai_oauth" ? 15_000 : false,
+    refetchInterval: useGatedRefetchInterval(
+      authProvider === "xai_oauth" ? 15_000 : 0,
+    ),
+    refetchIntervalInBackground: false,
   });
 
   const stopPolling = useCallback(() => {

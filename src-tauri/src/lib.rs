@@ -259,11 +259,12 @@ fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> b
 ///
 /// - 解析 URL
 /// - 向前端发射 `deeplink-import` / `deeplink-error` 事件
-/// - 可选：在成功时聚焦主窗口
+/// - 无论解析成功还是失败都会把主窗口带到前台：用户点了一次链接却毫无反应，
+///   比报错更难排查
 fn handle_deeplink_url(
     app: &tauri::AppHandle,
     url_str: &str,
-    focus_main_window: bool,
+    focus_on_success: bool,
     source: &str,
 ) -> bool {
     if !url_str.starts_with("ccswitch://") {
@@ -284,45 +285,74 @@ fn handle_deeplink_url(
                 request.name
             );
 
-            if let Err(e) = app.emit("deeplink-import", &request) {
+            // macOS 轻量模式会销毁 WKWebView；先把请求保存在 Rust 端，待新
+            // WebView 挂载后由前端主动拉取，避免 emit 时没有事件监听者。
+            if crate::lightweight::is_lightweight_mode() {
+                crate::deeplink::store_pending_deeplink(&request);
+                if let Err(error) = crate::lightweight::exit_lightweight_mode(app) {
+                    log::error!("深链唤起时重建 WebView 失败: {error}");
+                }
+            } else if let Err(e) = app.emit("deeplink-import", &request) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
             }
 
-            if focus_main_window {
-                if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(false);
-                    }
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone(), "deeplink");
-                    }
-                    log::info!("✓ Window shown and focused");
-                }
+            if focus_on_success {
+                focus_main_window(app);
             }
         }
         Err(e) => {
             log::error!("✗ Failed to parse deep link URL: {e}");
 
-            if let Err(emit_err) = app.emit(
-                "deeplink-error",
-                serde_json::json!({
-                    "url": url_str,
-                    "error": e.to_string()
-                }),
-            ) {
-                log::error!("✗ Failed to emit deeplink-error event: {emit_err}");
+            // 轻量模式下没有 WebView 接收事件，emit 会被静默丢弃，用户点了链接却
+            // 看不到任何反应。改为把错误留在 Rust 端并唤起窗口，由新页面弹提示。
+            if crate::lightweight::is_lightweight_mode() {
+                crate::deeplink::store_pending_deeplink_error(
+                    &crate::deeplink::DeepLinkParseError {
+                        url: url_str.to_string(),
+                        error: e.to_string(),
+                    },
+                );
+                if let Err(error) = crate::lightweight::exit_lightweight_mode(app) {
+                    log::error!("深链报错唤起时重建 WebView 失败: {error}");
+                }
+            } else {
+                if let Err(emit_err) = app.emit(
+                    "deeplink-error",
+                    serde_json::json!({
+                        "url": url_str,
+                        "error": e.to_string()
+                    }),
+                ) {
+                    log::error!("✗ Failed to emit deeplink-error event: {emit_err}");
+                }
+                focus_main_window(app);
             }
         }
     }
 
     true
+}
+
+/// 把主窗口带到前台。窗口不存在时只记一条日志——各调用方已自行记录上下文。
+fn focus_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("深链处理时找不到主窗口");
+        return;
+    };
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window.set_skip_taskbar(false);
+    }
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(target_os = "linux")]
+    {
+        linux_fix::nudge_main_window(window.clone(), "deeplink");
+    }
+    log::info!("✓ Window shown and focused");
 }
 
 /// 更新托盘菜单的Tauri命令
@@ -363,13 +393,10 @@ pub fn run() {
                 log::debug!("  arg[{i}]: {}", url_for_log(arg));
             }
 
-            if crate::lightweight::is_lightweight_mode() {
-                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
-                    log::error!("退出轻量模式重建窗口失败: {e}");
-                }
-            }
-
-            // Check for deep link URL in args (mainly for Windows/Linux command line)
+            // Check for deep link URL in args (mainly for Windows/Linux command line).
+            // Let handle_deeplink_url persist the request and rebuild a lightweight
+            // WebView; rebuilding first would emit before the new frontend listener
+            // exists.
             let mut found_deeplink = false;
             for arg in &args {
                 if handle_deeplink_url(app, arg, false, "single_instance args") {
@@ -378,26 +405,11 @@ pub fn run() {
                 }
             }
 
+            // 命中深链时 handle_deeplink_url 已经把窗口带到前台（成功、失败、轻量模式
+            // 重建三条路径都会），这里只处理没带深链的普通第二次启动。
             if !found_deeplink {
                 log::info!("ℹ No deep link URL found in args (this is expected on macOS when launched via system)");
-            }
-
-            // Show and focus window regardless
-            if let Some(window) = app.get_webview_window("main") {
-                // 防御性重置 Windows 的 skip_taskbar：single_instance 触发时，
-                // 原进程可能因 silent_startup / 关闭到托盘等处于 skip_taskbar(true) 状态，
-                // 仅 show() 不会重置该状态，会导致窗口可见但不在任务栏、最小化后消失。
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = window.set_skip_taskbar(false);
-                }
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    linux_fix::nudge_main_window(window.clone(), "single-instance");
-                }
+                focus_main_window(app);
             }
         }));
     }
@@ -439,16 +451,15 @@ pub fn run() {
 
                 if settings.minimize_to_tray_on_close {
                     api.prevent_close();
-                    let _ = window.hide();
+                    // macOS 关闭到托盘时销毁 WKWebView，避免隐藏窗口继续保留
+                    // WebContent/WebKit.GPU；托盘、Dock Reopen 和深链都会按需重建。
+                    if let Err(error) =
+                        crate::lightweight::enter_close_to_tray_mode(window.app_handle())
+                    {
+                        log::error!("关闭到托盘失败: {error}");
+                        let _ = window.hide();
+                    }
                     log::info!("关闭请求已处理：最小化到托盘");
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(true);
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        tray::apply_tray_policy(window.app_handle(), false);
-                    }
                 } else {
                     api.prevent_close();
                     log::info!("关闭请求已处理：退出应用");
@@ -1286,7 +1297,11 @@ pub fn run() {
                 // Session log usage sync: 启动时同步一次，之后每 60 秒检查
                 let db_for_session_sync = state.db.clone();
                 tauri::async_runtime::spawn(async move {
-                    const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
+                    // 5 分钟而不是 60 秒：sync_all_unlocked 遍历 7 类会话目录并逐个读文件
+                    // metadata。这段扫描在托盘常驻时也照跑，60 秒一轮意味着每分钟
+                    // 一次全目录 stat 峰值。会话用量本来就只是延迟几分钟可见，
+                    // 拉长周期不影响体感。
+                    const SESSION_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 
                     async fn run_session_sync(db: std::sync::Arc<crate::database::Database>, backfill: bool) {
                         // 手动扫描模式下跳过定时扫描；backfill 轮（启动首轮）仍进入，
@@ -1548,6 +1563,8 @@ pub fn run() {
             commands::sync_current_providers_live,
             // Deep link import
             commands::parse_deeplink,
+            commands::take_pending_deeplink,
+            commands::take_pending_deeplink_error,
             commands::merge_deeplink_config,
             commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
@@ -1869,13 +1886,6 @@ pub fn run() {
                         );
 
                         if url_str.starts_with("ccswitch://") {
-                            if crate::lightweight::is_lightweight_mode() {
-                                if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
-                                {
-                                    log::error!("退出轻量模式重建窗口失败: {e}");
-                                }
-                            }
-
                             // 解析并广播深链接事件，复用与 single_instance 相同的逻辑
                             match crate::deeplink::parse_deeplink_url(&url_str) {
                                 Ok(request) => {
@@ -1885,7 +1895,17 @@ pub fn run() {
                                         request.app
                                     );
 
-                                    if let Err(e) =
+                                    // macOS 轻量模式会销毁 WKWebView；先把请求存在 Rust 端，
+                                    // 待新 WebView 挂载后由前端主动拉取。反过来（先重建再
+                                    // emit）会打在监听者还不存在的窗口上，请求直接丢失。
+                                    if crate::lightweight::is_lightweight_mode() {
+                                        crate::deeplink::store_pending_deeplink(&request);
+                                        if let Err(e) =
+                                            crate::lightweight::exit_lightweight_mode(app_handle)
+                                        {
+                                            log::error!("深链唤起时重建 WebView 失败: {e}");
+                                        }
+                                    } else if let Err(e) =
                                         app_handle.emit("deeplink-import", &request)
                                     {
                                         log::error!(
@@ -1898,7 +1918,22 @@ pub fn run() {
                                         "Failed to parse deep link URL from RunEvent::Opened: {e}"
                                     );
 
-                                    if let Err(emit_err) = app_handle.emit(
+                                    // 轻量模式下没有 WebView 接收事件，emit 会被静默丢弃，
+                                    // 用户点了链接却看不到任何反应。改为把错误留在 Rust 端
+                                    // 并唤起窗口，由新页面弹提示。
+                                    if crate::lightweight::is_lightweight_mode() {
+                                        crate::deeplink::store_pending_deeplink_error(
+                                            &crate::deeplink::DeepLinkParseError {
+                                                url: url_str.to_string(),
+                                                error: e.to_string(),
+                                            },
+                                        );
+                                        if let Err(e) =
+                                            crate::lightweight::exit_lightweight_mode(app_handle)
+                                        {
+                                            log::error!("深链报错唤起时重建 WebView 失败: {e}");
+                                        }
+                                    } else if let Err(emit_err) = app_handle.emit(
                                         "deeplink-error",
                                         serde_json::json!({
                                             "url": url_str,

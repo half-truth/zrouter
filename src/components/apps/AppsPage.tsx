@@ -11,6 +11,7 @@ import {
   Loader2,
   MoreHorizontal,
   RefreshCw,
+  Search,
 } from "lucide-react";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
@@ -180,7 +181,7 @@ export function AppsPage() {
               <Button
                 variant="neutral"
                 size="regular"
-                disabled={tools.isLoadingTools || Boolean(tools.batchAction)}
+                disabled={Boolean(tools.batchAction)}
                 aria-busy={Boolean(tools.batchAction)}
                 onClick={() =>
                   void tools.handleRunToolAction(
@@ -203,18 +204,11 @@ export function AppsPage() {
             <Button
               variant="neutral"
               size="regular"
-              disabled={tools.isLoadingTools || tools.isAnyBusy}
-              onClick={() => void tools.checkForUpdates()}
+              disabled={tools.isAnyBusy}
+              onClick={() => void tools.refreshInstallations()}
             >
-              <RefreshCw
-                className={cn(
-                  "h-3.5 w-3.5",
-                  tools.isLoadingTools && "animate-spin",
-                )}
-              />
-              {tools.isLoadingTools
-                ? t("appsPage.checking")
-                : t("appsPage.checkUpdates")}
+              <RefreshCw className="h-3.5 w-3.5" />
+              {t("appsPage.refreshInstalls")}
             </Button>
             <DropdownMenu>
               <HoverTip content={t("common.more")}>
@@ -232,7 +226,8 @@ export function AppsPage() {
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
                   disabled={
-                    tools.isLoadingTools ||
+                    !tools.hasDetectedTools ||
+                    tools.detectingTool !== null ||
                     tools.isAnyBusy ||
                     tools.isDiagnosingAll
                   }
@@ -429,15 +424,17 @@ function ToolRow({
   // 「诊断安装冲突」的结果优先（升级后会重新诊断），否则用打开页面时探测到的安装分布
   const installs = tools.toolDiagnostics[tool] ?? report?.installs;
 
-  const isVersionLoading =
-    Boolean(tools.loadingTools[tool]) ||
-    (tools.isLoadingTools && !tools.toolVersionByName.has(tool));
+  const hasVersionResult = tools.toolVersionByName.has(tool);
+  const isDetecting = tools.detectingTool === tool;
+  const isVersionLoading = Boolean(tools.loadingTools[tool]) || isDetecting;
   const isOutdated = isUpdateAvailable(info?.version, info?.latest_version);
   const broken = Boolean(info?.installed_but_broken);
   const isBusy = tools.busyTools.has(tool);
+  // 未检测、检测中和已装但跑不起来都没有可执行动作：未检测时给出「安装」按钮
+  // 会把「还没查」谎报成「没装」，而重装同一个版本根本解决不了后一种情况。
   const action: ToolLifecycleAction | null =
     tools.busyTools.get(tool) ??
-    (isVersionLoading || broken
+    (!hasVersionResult || isVersionLoading || broken
       ? null
       : !info?.version
         ? "install"
@@ -470,14 +467,37 @@ function ToolRow({
           {t("appsPage.newVersion", { version: info.latest_version })}
         </div>
       )}
+      <Button
+        variant="quiet"
+        size="compact"
+        className="h-5 px-1 text-caption"
+        onClick={() => void tools.detectToolVersion(tool)}
+        disabled={tools.detectingTool !== null || isBusy}
+        title={t("settings.toolDetectVersionsHelp")}
+      >
+        <RefreshCw className={cn("h-3 w-3", isDetecting && "animate-spin")} />
+        {t("settings.toolDetectAgain")}
+      </Button>
     </div>
   ) : broken ? (
     <span className="inline-flex items-center gap-1 text-caption font-medium text-warning-text">
       <AlertTriangle className="h-3.5 w-3.5" />
       {t("appsPage.notRunnable")}
     </span>
-  ) : (
+  ) : hasVersionResult ? (
     <span className="text-caption text-fg-2">{t("common.notInstalled")}</span>
+  ) : (
+    // 没查过就说「未安装」是撒谎。每行自带检测入口：要查哪个点哪个。
+    <Button
+      variant="quiet"
+      size="compact"
+      onClick={() => void tools.detectToolVersion(tool)}
+      disabled={tools.detectingTool !== null || isBusy}
+      title={t("settings.toolDetectVersionsHelp")}
+    >
+      <Search className="h-3.5 w-3.5" />
+      {t("settings.toolDetectVersions")}
+    </Button>
   );
 
   const actionButton = action ? (

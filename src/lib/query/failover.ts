@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { proxyKeys } from "@/lib/query/proxy";
 import { getAppLabel } from "@/config/appConfig";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 // ========== 熔断器 Hooks ==========
 
@@ -20,7 +21,10 @@ export function useProviderHealth(
     queryKey: ["providerHealth", providerId, appType],
     queryFn: () => failoverApi.getProviderHealth(providerId, appType),
     enabled: enabled && !!providerId && !!appType,
-    refetchInterval: 5000, // 每 5 秒刷新一次
+    // 每张供应商卡片一个查询：10 张卡片就是每 5 秒 10 次 IPC。节奏放慢到 15s，
+    // 并在窗口失焦时停表——健康状态只在用户看着卡片时才有意义。
+    refetchInterval: useGatedRefetchInterval(15_000, enabled),
+    refetchIntervalInBackground: false,
     retry: false,
   });
 }
@@ -87,11 +91,13 @@ export function useUpdateCircuitBreakerConfig() {
  * 获取熔断器统计信息
  */
 export function useCircuitBreakerStats(providerId: string, appType: string) {
+  const enabled = !!providerId && !!appType;
   return useQuery({
     queryKey: ["circuitBreakerStats", providerId, appType],
     queryFn: () => failoverApi.getCircuitBreakerStats(providerId, appType),
-    enabled: !!providerId && !!appType,
-    refetchInterval: 5000, // 每 5 秒刷新一次
+    enabled,
+    refetchInterval: useGatedRefetchInterval(15_000, enabled),
+    refetchIntervalInBackground: false,
   });
 }
 

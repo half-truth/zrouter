@@ -307,6 +307,8 @@
   transition: none !important;
 }
 
+/* 短时面（弹窗内）用的磨砂底。保留模糊：这些面板只在用户打开时存在，
+   那点合成开销是一次性的。 */
 .glass {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(10px);
@@ -319,31 +321,11 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.glass-card {
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-.dark .glass-card {
-  background: linear-gradient(
-    145deg,
-    rgba(255, 255, 255, 0.05) 0%,
-    rgba(255, 255, 255, 0.01) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-}
-
-.glass-card-active {
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.4);
-}
-
-.dark .glass-card-active {
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+/* 常驻面用这个：模糊层每次滚动、每次数据更新都要重新采样背后的内容，
+   页面静止时也在持续合成。常驻元素一律不挂 backdrop-filter。 */
+.glass-solid {
+  background: hsl(var(--card) / 0.98);
+  border: 1px solid hsl(var(--border));
 }
 
 .glass-header {

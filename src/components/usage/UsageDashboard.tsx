@@ -54,6 +54,7 @@ import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { UsageHeatmap } from "./UsageHeatmap";
 import { fmtInt, formatRelativeTime, getLocaleFromLanguage } from "./format";
 import { getUsageProviderLabel, usageProviderTitle } from "./providerLabel";
+import { useRelativeTimeTicker } from "@/hooks/useRelativeTimeTicker";
 
 const DEFAULT_REFRESH_INTERVAL_MS = 30000;
 const REFRESH_INTERVAL_OPTIONS_MS = [0, 5000, 10000, 30000, 60000] as const;
@@ -99,14 +100,9 @@ function useContainerWidth<T extends HTMLElement>() {
   return [ref, width] as const;
 }
 
-/** 每 30 秒重渲染一次，让「N 分钟前同步」跟着走。 */
+/** 每 30 秒重渲染一次，让「N 分钟前同步」跟着走；窗口失焦时停表。 */
 function useMinuteTicker() {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return now;
+  return useRelativeTimeTicker(true);
 }
 
 const menuContentClass =

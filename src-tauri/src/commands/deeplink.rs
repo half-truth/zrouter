@@ -5,6 +5,17 @@ use crate::deeplink::{
 use crate::store::AppState;
 use tauri::State;
 
+#[tauri::command]
+pub fn take_pending_deeplink() -> Option<DeepLinkImportRequest> {
+    crate::deeplink::take_pending_deeplink()
+}
+
+/// 取回轻量模式期间解析失败的深链，让新页面能弹出提示而不是静默丢弃用户的点击。
+#[tauri::command]
+pub fn take_pending_deeplink_error() -> Option<crate::deeplink::DeepLinkParseError> {
+    crate::deeplink::take_pending_deeplink_error()
+}
+
 /// Parse a deep link URL and return the parsed request for frontend confirmation
 #[tauri::command]
 pub fn parse_deeplink(url: String) -> Result<DeepLinkImportRequest, String> {

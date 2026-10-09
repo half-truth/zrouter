@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 import type {
   LogFilters,
   UsageRangeSelection,
@@ -19,6 +20,22 @@ type UsageQueryOptions = {
   refetchInterval?: number | false;
   refetchIntervalInBackground?: boolean;
 };
+
+/**
+ * 用量查询的自动刷新策略：调用方只声明*多久刷一次*，这里决定*要不要刷*。
+ * 窗口不活跃期间节奏折叠成 `false`，查询就此停摆而不是在用户背后敲 SQLite；
+ * React Query 会在重新聚焦时补刷一次。
+ *
+ * 策略放在这里而不是各个调用点，是为了让调用方永远不必知道窗口可见性，
+ * 也让以后新增的用量查询无需重复这个判断就自动继承它。
+ */
+function useUsageRefetchInterval(requested?: number | false): number | false {
+  // 显式的 `false` 变成 0 节奏，由共用门控折叠掉；写成单个表达式是为了让
+  // 下面的 hook 每次渲染都被调用，即便调用方在两次渲染之间切换了选项。
+  return useGatedRefetchInterval(
+    requested === false ? 0 : (requested ?? DEFAULT_REFETCH_INTERVAL_MS),
+  );
+}
 
 type RequestLogsQueryArgs = {
   filters: LogFilters;
@@ -182,6 +199,7 @@ export function useUsageSummary(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.summary(
@@ -202,7 +220,7 @@ export function useUsageSummary(
       );
     },
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -212,6 +230,7 @@ export function useUsageSummaryByApp(
   filters?: Pick<UsageScopeFilters, "providerName" | "model">,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   return useQuery({
     queryKey: usageKeys.summaryByApp(
       range.preset,
@@ -230,7 +249,7 @@ export function useUsageSummaryByApp(
       );
     },
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -240,6 +259,7 @@ export function useUsageTrends(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.trends(
@@ -261,7 +281,7 @@ export function useUsageTrends(
     },
     enabled: options?.enabled ?? true,
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -271,6 +291,7 @@ export function useUsageFirstDate(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.firstDate(effective),
@@ -281,7 +302,7 @@ export function useUsageFirstDate(
         effective.model,
       ),
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -291,6 +312,7 @@ export function useProviderStats(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.providerStats(
@@ -311,7 +333,7 @@ export function useProviderStats(
       );
     },
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -321,6 +343,7 @@ export function useModelStats(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
 ) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const effective = normalizeScopeFilters(filters);
   return useQuery({
     queryKey: usageKeys.modelStats(
@@ -341,7 +364,7 @@ export function useModelStats(
       );
     },
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -353,6 +376,7 @@ export function useRequestLogs({
   pageSize = 20,
   options,
 }: RequestLogsQueryArgs) {
+  const refetchInterval = useUsageRefetchInterval(options?.refetchInterval);
   const key: RequestLogsKey = {
     preset: range.preset,
     customStartDate: range.customStartDate,
@@ -371,7 +395,7 @@ export function useRequestLogs({
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize);
     },
     placeholderData: keepPreviousData,
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
+    refetchInterval, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
@@ -389,20 +413,22 @@ export function useRequestDetail(requestId: string) {
  * 后台每 60 秒扫一次，这里 30 秒问一次；挂在 usage 下，同步后跟着失效重取。
  */
 export function useSessionUsageLastSync() {
+  const refetchInterval = useUsageRefetchInterval(DEFAULT_REFETCH_INTERVAL_MS);
   return useQuery({
     queryKey: [...usageKeys.all, "session-last-sync"] as const,
     queryFn: () => usageApi.getSessionUsageLastSync(),
-    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: false,
   });
 }
 
 /** 单个会话的用量汇总（会话阅读页头部），只数会话日志导入的行。 */
 export function useSessionUsageSummary(appType: string, sessionId: string) {
+  const refetchInterval = useUsageRefetchInterval(DEFAULT_REFETCH_INTERVAL_MS);
   return useQuery({
     queryKey: usageKeys.session(appType, sessionId),
     queryFn: () => usageApi.getSessionUsageSummary(appType, sessionId),
-    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
+    refetchInterval,
     refetchIntervalInBackground: false,
   });
 }

@@ -31,7 +31,7 @@ export const AppCountBar: React.FC<AppCountBarProps> = ({
   const hasPendingBulkToggle = pendingApp !== undefined && pendingApp !== null;
 
   return (
-    <div className="mb-4 flex flex-shrink-0 items-center gap-4 rounded-xl border border-white/10 px-6 py-4 glass">
+    <div className="mb-4 flex flex-shrink-0 items-center gap-4 rounded-xl border border-white/10 px-6 py-4 glass-solid">
       <Badge
         variant="outline"
         className="h-7 shrink-0 whitespace-nowrap bg-surface px-3"

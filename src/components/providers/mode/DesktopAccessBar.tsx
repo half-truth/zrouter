@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Notice } from "@/components/ui/notice";
 import { cn } from "@/lib/utils";
+import { useGatedRefetchInterval } from "@/lib/windowActivity";
 
 interface DesktopAccessBarProps {
   current?: Provider;
@@ -32,7 +33,10 @@ export function DesktopAccessBar({
   const { data: status } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
-    refetchInterval: 5000,
+    // 这条查询挂在顶栏上，也就是整个应用生命周期都在：失焦时停表，否则静止
+    // 状态下每 5 秒仍有一次 IPC。
+    refetchInterval: useGatedRefetchInterval(5000),
+    refetchIntervalInBackground: false,
   });
   const mapping = current
     ? providerNeedsRouting("claude-desktop", current)

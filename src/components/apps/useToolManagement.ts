@@ -303,10 +303,11 @@ export function useToolManagement() {
   } = useSyncExternalStore(subscribeToolManagement, getToolManagementState);
   const toolVersions = toolVersionsCache?.data ?? EMPTY_TOOL_VERSIONS;
   const pendingUpgrade = pendingUpgrades[0] ?? null;
-  // 有缓存（哪怕已超期）就先展示旧值、初始不 loading；超期时由挂载副作用触发后台
-  // 重查（stale-while-revalidate）。无缓存（首次）才从 loading 起步。
-  const [isLoadingTools, setIsLoadingTools] = useState(
-    () => toolVersionsCache === null,
+  // 工具版本仅在用户主动点某一行的「检测」后获取，且一次只查一个。挂载不自动探测
+  // ——见下面的挂载副作用。有缓存就先展示旧值；无缓存显示「尚未检测」而不是 loading。
+  const [detectingTool, setDetectingTool] = useState<ToolName | null>(null);
+  const [hasDetectedTools, setHasDetectedTools] = useState(
+    () => (toolVersionsCache?.data.length ?? 0) > 0,
   );
 
   const [wslShellByTool, setWslShellByTool] = useState<
@@ -407,42 +408,27 @@ export function useToolManagement() {
     [],
   );
 
-  const loadAllToolVersions = useCallback(
-    async (options?: { force?: boolean }) => {
-      const force = options?.force ?? false;
-      const cache = toolManagementState.toolVersionsCache;
-      // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过 6 个 `--version`
-      // 子进程 + 6 个 latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
-      if (
-        !force &&
-        cache &&
-        Date.now() - cache.at < TOOL_VERSIONS_CACHE_TTL_MS
-      ) {
-        setIsLoadingTools(false);
-        return;
-      }
-      setIsLoadingTools(true);
+  /**
+   * 检测单个工具的版本。**只做单个**：一次「检测全部」会对 9 个工具各起一次
+   * `$SHELL -lic '<tool> --version'` 子进程加一次 registry / GitHub 请求，
+   * 即使后端顺序处理也是一段持续的热量。用户要查哪个就点哪个。
+   */
+  const detectToolVersion = useCallback(
+    async (toolName: ToolName) => {
+      setDetectingTool(toolName);
       try {
-        // 逐工具并发探测：每个工具一完成就合并进 toolVersions（并写模块缓存）、清掉自己
-        // 的 loadingTools 标志，对应卡片随即独立刷新——而非等全部探测完才一次性显示（后端
-        // 原本对 6 个工具串行 await，总耗时累加；并发后压成「最慢的那一个」）。refreshTool-
-        // Versions 已内建按 name 合并 + per-tool loading + try/catch 兜底（单工具失败返回 []
-        // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
-        // 切页后即使缓存已过期，也跳过忙碌工具，由原任务在执行结束后刷新版本。
-        await Promise.all(
-          TOOL_NAMES.filter(
-            (toolName) => !toolManagementState.busyTools.has(toolName),
-          ).map((toolName) => refreshToolVersions([toolName], wslShellByTool)),
-        );
-      } finally {
-        // 全量探测结束：把缓存时间戳刷新为现在，标记「刚完成一次全量加载」、重置 TTL。
+        const updated = await refreshToolVersions([toolName], wslShellByTool);
+        if (updated.length === 0) return;
+        setHasDetectedTools(true);
+        // 时间戳盖在这里，让「最近检测于」反映用户真正做过的最近一次。
         const latestCache = toolManagementState.toolVersionsCache;
         if (latestCache) {
           updateToolManagementState({
             toolVersionsCache: { ...latestCache, at: Date.now() },
           });
         }
-        setIsLoadingTools(false);
+      } finally {
+        setDetectingTool(null);
       }
     },
     [wslShellByTool, refreshToolVersions],
@@ -495,20 +481,18 @@ export function useToolManagement() {
   );
 
   useEffect(() => {
-    void loadAllToolVersions();
+    // 只探测安装分布（纯路径解析，便宜）。工具版本不自动探测，也不提供「检测全部」：
+    // 每个工具一次 `$SHELL -lic --version` 子进程加一次 npm/GitHub/PyPI 网络请求，
+    // 9 个连着跑就是一段持续的热量。改成逐行手动点「检测」。
     void loadInstallations();
-    // Mount-only: loadAllToolVersions is intentionally excluded to avoid
-    // re-fetching all tools whenever wslShellByTool changes. Single-tool
-    // refreshes are handled by refreshToolVersions in the shell/flag handlers.
+    // Mount-only: deliberately excluded so remounting never re-probes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const checkForUpdates = useCallback(async () => {
-    await Promise.all([
-      loadAllToolVersions({ force: true }),
-      loadInstallations({ force: true }),
-    ]);
-  }, [loadAllToolVersions, loadInstallations]);
+  const refreshInstallations = useCallback(
+    () => loadInstallations({ force: true }),
+    [loadInstallations],
+  );
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -919,14 +903,15 @@ export function useToolManagement() {
 
   // 全量刷新和诊断仍等待升级结束；各工具的操作只受自身忙碌状态影响。
   const isAnyBusy = busyTools.size > 0;
-  // 最近一次全量检查完成的时刻；0 表示还没完整查过一次
+  // 最近一次检测完成的时刻；null 表示还没查过任何一个
   const lastCheckedAt =
     toolVersionsCache && toolVersionsCache.at > 0 ? toolVersionsCache.at : null;
 
   return {
     toolVersionByName,
     installReports,
-    isLoadingTools,
+    hasDetectedTools,
+    detectingTool,
     loadingTools,
     busyTools,
     batchAction,
@@ -937,7 +922,8 @@ export function useToolManagement() {
     isAnyBusy,
     lastCheckedAt,
     wslShellByTool,
-    checkForUpdates,
+    detectToolVersion,
+    refreshInstallations,
     handleToolShellChange,
     handleToolShellFlagChange,
     handleDiagnoseAll,

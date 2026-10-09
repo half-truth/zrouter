@@ -14,6 +14,7 @@ import {
   type QuotaTone,
 } from "./quotaRules";
 import { QuotaBreakdownChevron, QuotaBreakdownRow } from "./QuotaBreakdown";
+import { useRelativeTimeTicker } from "@/hooks/useRelativeTimeTicker";
 
 /**
  * 快用完只加深加粗、不用橙色：浅色模式的警告文字和可点击文字（主题橙）几乎同色，
@@ -35,13 +36,7 @@ export const TONE_FILL: Record<QuotaTone, string> = {
 
 /** 每 30 秒刷新一次「x 分钟前」和重置倒计时 */
 export function useNow(active: boolean) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
+  return useRelativeTimeTicker(active);
 }
 
 /** 一行里最早到点的那次重置（合并行几档各有各的，写最近的那个）；都没有或都过了为 null */

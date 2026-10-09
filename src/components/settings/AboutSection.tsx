@@ -304,7 +304,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <Star
               aria-hidden="true"
-              className="h-5 w-5 shrink-0 animate-[spin_6s_linear_infinite] fill-amber-500 text-amber-500 motion-reduce:animate-none"
+              className="h-5 w-5 shrink-0 fill-amber-500 text-amber-500"
             />
             <p className="min-w-0 text-body text-fg-1">
               {t("settings.starPrompt")}

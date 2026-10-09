@@ -70,9 +70,14 @@ const outdated = new Set<string>();
 const missing = new Set<string>();
 
 function card(name: string) {
-  return within(
-    screen.getByText(name).closest("[data-tool-row]") as HTMLElement,
-  );
+  // 行内可能有多处同名文本（应用图标的无障碍名、显示名），所以取第一个能定位到
+  // 这一行 [data-tool-row] 的匹配，而不是要求全文唯一。
+  const row = screen
+    .getAllByText(name)
+    .map((el) => el.closest("[data-tool-row]"))
+    .find((el): el is HTMLElement => el !== null);
+  if (!row) throw new Error(`no tool row named ${name}`);
+  return within(row);
 }
 
 /** 已是最新：没有升级 / 安装按钮，显示新版本号。 */
@@ -99,15 +104,48 @@ function mountApps(AppsPage: () => JSX.Element) {
   );
 }
 
+const ALL_TOOL_ROWS = [
+  "Claude Code",
+  "Codex",
+  "Gemini CLI",
+  "Grok Build",
+  "OpenCode",
+  "OpenClaw",
+  "Hermes",
+  "Pi",
+  "MiniMax Code",
+];
+
+/**
+ * 逐行点「检测」直到所有工具都有版本结果。
+ *
+ * 页面刻意不做「检测全部」：九个工具一起查会让机器明显发热。所以这里一行一行点，
+ * 既拿到这些用例需要的版本状态，也顺带守住「一次只查一个」这条约束。
+ */
+async function detectEveryTool() {
+  for (const name of ALL_TOOL_ROWS) {
+    const button = card(name).queryByRole("button", {
+      name: /settings\.toolDetectVersions|settings\.toolDetectAgain/,
+    });
+    if (!button) continue;
+    await act(async () => {
+      fireEvent.click(button);
+    });
+  }
+}
+
 async function renderApps() {
   // 安装 / 升级的状态放在模块级 store 里，跨挂载保留。
   const { AppsPage } = await import("@/components/apps/AppsPage");
   const view = mountApps(AppsPage);
   await waitFor(() =>
     expect(
-      within(view.container).getByText("appsPage.checkUpdates"),
+      within(view.container).getByText("appsPage.refreshInstalls"),
     ).toBeInTheDocument(),
   );
+  // 挂载不再自动探测工具版本（每个工具一次 `--version` 子进程加一次网络请求），
+  // 所以这里逐行点检测，让这些用例拿到版本状态——它们测的是升级并发，不是探测本身。
+  await detectEveryTool();
   return view;
 }
 
@@ -277,7 +315,9 @@ describe("AppsPage concurrent CLI upgrades", () => {
       await act(async () => running.resolve());
       expect(isReady("Claude Code")).toBe(true);
       expect(
-        screen.getByRole("button", { name: "appsPage.checkUpdates" }),
+        card("Claude Code").getByRole("button", {
+          name: "settings.toolDetectAgain",
+        }),
       ).toBeEnabled();
       expect(mocks.success).toHaveBeenCalledTimes(1);
     },
@@ -331,7 +371,15 @@ describe("AppsPage concurrent CLI upgrades", () => {
     });
     const { AppsPage } = await import("@/components/apps/AppsPage");
     const view = mountApps(AppsPage);
-    await waitFor(() => expect(mocks.getToolVersions).toHaveBeenCalledTimes(9));
+    // 挂载不再自动探测：显式点这一行的「检测」触发那次会挂起的探测。
+    await act(async () => {
+      fireEvent.click(
+        card("Claude Code").getByRole("button", {
+          name: /settings\.toolDetectVersions|settings\.toolDetectAgain/,
+        }),
+      );
+    });
+    await waitFor(() => expect(mocks.getToolVersions).toHaveBeenCalledTimes(1));
     view.unmount();
     const remounted = await renderApps();
     fireEvent.click(updateButton("Claude Code"));
@@ -453,7 +501,9 @@ describe("AppsPage concurrent CLI upgrades", () => {
       screen.queryByRole("button", { name: /settings\.updateAllTools/ }),
     ).toBeNull();
     expect(
-      screen.getByRole("button", { name: "appsPage.checkUpdates" }),
+      card("Claude Code").getByRole("button", {
+        name: "settings.toolDetectAgain",
+      }),
     ).toBeEnabled();
     expect(mocks.runToolLifecycleAction).toHaveBeenCalledTimes(3);
     expect(mocks.success).toHaveBeenCalledTimes(1);
@@ -837,7 +887,9 @@ describe("AppsPage concurrent CLI upgrades", () => {
       mocks.runToolLifecycleAction.mock.calls.map(([tools]) => tools),
     ).toEqual([["codex"], ["gemini"]]);
     expect(
-      screen.getByRole("button", { name: "appsPage.checkUpdates" }),
+      card("Gemini CLI").getByRole("button", {
+        name: "settings.toolDetectAgain",
+      }),
     ).toBeEnabled();
     expect(mocks.warning).toHaveBeenCalledWith(
       "settings.toolUpgradeUnmanagedTitle",

@@ -57,6 +57,11 @@ export interface DeepLinkImportRequest {
   usageAutoInterval?: number;
 }
 
+export interface DeepLinkError {
+  url: string;
+  error: string;
+}
+
 export interface McpImportResult {
   importedCount: number;
   importedIds: string[];
@@ -108,5 +113,22 @@ export const deeplinkApi = {
     request: DeepLinkImportRequest,
   ): Promise<ImportResult> => {
     return invoke("import_from_deeplink_unified", { request });
+  },
+
+  /**
+   * Drain the deep link that arrived while the WebView was destroyed.
+   * Returns null when nothing is pending. `take` is drain semantics: a second
+   * call returns null so a freshly mounted page cannot replay the same request.
+   */
+  takePending: async (): Promise<DeepLinkImportRequest | null> => {
+    return invoke("take_pending_deeplink");
+  },
+
+  /**
+   * Drain the parse error for a deep link that arrived while the WebView was
+   * destroyed, so the user sees a message instead of their click vanishing.
+   */
+  takePendingError: async (): Promise<DeepLinkError | null> => {
+    return invoke("take_pending_deeplink_error");
   },
 };
