@@ -3653,21 +3653,19 @@ impl Database {
     pub(crate) fn table_exists(conn: &Connection, table: &str) -> Result<bool, AppError> {
         Self::validate_identifier(table, "表名")?;
 
-        let mut stmt = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
-            .map_err(|e| AppError::Database(format!("读取表名失败: {e}")))?;
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| AppError::Database(format!("查询表名失败: {e}")))?;
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            let name: String = row
-                .get(0)
-                .map_err(|e| AppError::Database(format!("解析表名失败: {e}")))?;
-            if name.eq_ignore_ascii_case(table) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        // 精确查询 + 一次性 EXISTS：原实现遍历 sqlite_master 全部行做
+        // eq_ignore_ascii_case，且未命中也全表扫描，叠加迁移/维护链反复调用
+        // 形成高 CPU 热点。EXISTS 让 SQLite 在命中第一行即返回，O(1)。
+        let exists =
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get::<_, i32>(0),
+            )
+            .map_err(|e| AppError::Database(format!("查询表存在性失败: {e}")))? as u32
+                > 0;
+
+        Ok(exists)
     }
 
     pub(crate) fn has_column(

@@ -411,6 +411,19 @@ impl Database {
 
     /// Periodic backup: create a new backup if the latest one is older than the configured interval
     pub(crate) fn periodic_backup_if_needed(&self) -> Result<(), AppError> {
+        // 进程内防抖：定时器 24h 间隔，但每次执行都做完整备份/清理/rollup/vacuum。
+        // 真实触发条件是"最新备份超过 interval_hours"或"有待清理/归档行"，不满足就直接短路。
+        // 首次执行后短期内（5 分钟内）不重复执行完整检查，避免紧密循环。
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static LAST_FULL_CHECK: AtomicI64 = AtomicI64::new(0);
+        const MIN_INTERVAL_SECS: i64 = 5 * 60;
+        let now = chrono::Utc::now().timestamp();
+        let last = LAST_FULL_CHECK.load(Ordering::Relaxed);
+        if last != 0 && now.saturating_sub(last) < MIN_INTERVAL_SECS {
+            return Ok(());
+        }
+        LAST_FULL_CHECK.store(now, Ordering::Relaxed);
+
         let interval_hours = crate::settings::effective_backup_interval_hours();
         if interval_hours > 0 {
             let backup_file_guard = lock_backup_file_operations()?;
